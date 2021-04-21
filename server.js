@@ -1,161 +1,111 @@
-const tickets = [];
-
 const http = require('http');
 const Koa = require('koa');
-const koaBody = require('koa-body');
-
-const fullToShort = () => JSON.stringify(tickets.map(
-  ({
-    id, name, status, created,
-  }) => ({
-    id, name, status, created,
-  }),
-));
+const Router = require('koa-router');
+const cors = require('koa2-cors');
+const { streamEvents } = require('http-event-stream');
+const uuid = require('uuid');
 
 const app = new Koa();
+const router = new Router();
 
-app.use(koaBody({
-  urlencoded: true,
-}));
+app.use(cors());
 
-app.use(async (ctx, next) => {
-  const origin = ctx.request.get('Origin');
+const randomInt = (min, max) => Math.trunc(Math.random() * (max - min + 1)) + min;
 
-  if (!origin) {
-    return next();
+const events = [
+  {
+    event: 'action',
+    text: 'Игра началась',
+  },
+  {
+    event: 'action',
+    text: 'Арбитр кашляет, чихает... Какой дриблинг!',
+  },
+  {
+    event: 'action',
+    text: 'Удар! Мяч отбит, ну, у вратаря ж опыта больше',
+  },
+  {
+    event: 'action',
+    text: 'Нападающий Хировато обходит защитника... и наносит удар по воротам! Да, не очень хорошо сыграл японский футболист...',
+  },
+  {
+    event: 'action',
+    text: 'Все сделал, только ударить забыл... Ну и немудрено: столько бежать — имя своё забыть можно',
+  },
+  {
+    event: 'action',
+    text: 'И вот мяч попадает в оператора! Это очень понравилось взыскательным болельщикам',
+  },
+  {
+    event: 'goal',
+    text: 'Отличный удар! И Г-О-О-О-Л!',
+  },
+  {
+    event: 'freekick',
+    text: 'И снова Насри нарушает правила... Насри - это фамилия',
+  },
+  {
+    event: 'freekick',
+    text: 'Нарушение правил, будет штрафной удар',
+  },
+  {
+    event: 'freekick',
+    text: 'Одиннадцатиметровый!',
+  },
+  {
+    event: 'freekick',
+    text: 'Кажется, судья сейчас назначит штрафной... Ага, назначил',
+  },
+];
+
+const eventsBuffer = [];
+const maxCount = 50;
+
+const generateEvents = () => {
+  if (eventsBuffer.length >= maxCount) {
+    return;
   }
 
-  const headers = { 'Access-Control-Allow-Origin': '*' };
+  const event = {};
+  const index = eventsBuffer.length ? randomInt(1, 10) : 0;
+  event.event = events[index].event;
+  event.data = JSON.stringify({
+    text: events[index].text,
+    time: Date.now(),
+  });
+  event.id = uuid.v4();
 
-  if (ctx.request.method !== 'OPTIONS') {
-    ctx.response.set({ ...headers });
-    try {
-      return next();
-    } catch (e) {
-      e.headers = { ...e.headers, ...headers };
-      throw e;
-    }
-  }
+  eventsBuffer.push(event);
+  setTimeout(generateEvents, randomInt(1, 20) * 1000);
+};
+generateEvents();
 
-  if (ctx.request.get('Access-Control-Request-Method')) {
-    ctx.response.set({
-      ...headers,
-      'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, PATCH',
-    });
-    if (ctx.request.get('Access-Control-Request-Headers')) {
-      ctx.response.set('Access-Control-Allow-Headers', ctx.request.get('Access-Control-Allow-Request-Headers'));
-    }
-    ctx.response.status = 204;
-  }
+router.get('/sse', async (ctx) => {
+  let index = 0;
 
-  return null;
+  streamEvents(ctx.req, ctx.res, {
+    async fetch(lastEventId) {
+      const i = eventsBuffer.findIndex(({ id }) => id === lastEventId) + 1;
+      index = eventsBuffer.length;
+      return i < index ? eventsBuffer.slice(i) : [];
+    },
+    stream(sse) {
+      const interval = setInterval(() => {
+        if (index < eventsBuffer.length) {
+          sse.sendEvent(eventsBuffer[index]);
+          index++;
+        }
+      }, 500);
+      return () => clearInterval(interval);
+    },
+  });
+  ctx.respond = false;
 });
 
-app.use(async (ctx, next) => {
-  if (ctx.request.method !== 'GET') {
-    return next();
-  }
-
-  const {
-    method,
-    id: reqId,
-  } = ctx.request.query;
-
-  let ticket;
-
-  switch (method) {
-    case 'allTickets':
-      ctx.response.body = fullToShort();
-      return null;
-
-    case 'ticketById':
-      ticket = tickets.find(
-        ({ id }) => id === +reqId,
-      );
-
-      if (!ticket) {
-        ctx.response.status = 404;
-        return null;
-      }
-
-      ctx.response.body = ticket.description;
-      return null;
-
-    default:
-      ctx.response.status = 400;
-      return null;
-  }
-});
-
-app.use(async (ctx, next) => {
-  if (ctx.request.method !== 'POST') {
-    return next();
-  }
-
-  const {
-    method,
-    id: reqId,
-    name: reqName,
-    description: reqDescription,
-    status: reqStatus,
-  } = ctx.request.body;
-
-  let ticket;
-  let index;
-
-  switch (method) {
-    case 'createTicket':
-      if (!reqId) {
-        tickets.push({
-          id: tickets.length ? tickets[tickets.length - 1].id + 1 : 1,
-          name: reqName,
-          description: reqDescription,
-          status: reqStatus,
-          created: Date.now(),
-        });
-
-        ctx.response.body = fullToShort();
-        return null;
-      }
-
-      ticket = tickets.find(
-        ({ id }) => id === +reqId,
-      );
-
-      if (!ticket) {
-        ctx.response.status = 404;
-        return null;
-      }
-
-      ticket.name = reqName;
-      ticket.description = reqDescription;
-      ticket.status = reqStatus;
-      ctx.response.body = fullToShort();
-      return null;
-
-    case 'deleteTicket':
-      index = tickets.findIndex(
-        ({ id }) => id === +reqId,
-      );
-
-      if (index < 0) {
-        ctx.response.status = 404;
-        return null;
-      }
-
-      tickets.splice(index, 1);
-      ctx.response.body = fullToShort();
-      return null;
-
-    default:
-      ctx.response.status = 400;
-      return null;
-  }
-});
-
-app.use(async (ctx) => {
-  ctx.response.status = 405;
-});
+app.use(router.routes());
+app.use(router.allowedMethods());
 
 const port = process.env.PORT || 7070;
-http.createServer(app.callback()).listen(port);
+const server = http.createServer(app.callback());
+server.listen(port);
